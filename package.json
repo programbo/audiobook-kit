@@ -14,7 +14,7 @@
   },
   "scripts": {
     "build": "vp build",
-    "dev": "bun run src/cli.ts",
+    "dev": "bun --watch src/dev.ts",
     "lint": "vp lint",
     "format": "vp fmt",
     "format:check": "vp fmt --check",
