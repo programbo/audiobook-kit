@@ -13,7 +13,6 @@ const buildSchema = z.object({
   dryRun: z.boolean().default(false),
   json: z.boolean().default(false),
   noConversion: z.boolean().default(false),
-  jobs: z.coerce.number().int().positive().default(1),
   bitrate: z
     .string()
     .regex(/^\d+k$/, 'Bitrate must use the form 64k.')
@@ -62,7 +61,6 @@ export function parseCommand(
     dryRun: options.dryRun,
     json: options.json,
     noConversion: options.conversion === false,
-    jobs: options.jobs,
     bitrate: options.bitrate,
     title: options.title,
     author: options.author,
@@ -94,7 +92,6 @@ CHAPTERS
 
 CONTROL
   -n, --dry-run              Resolve and print the plan without building.
-  --jobs <n>                 Parallel input conversions. [default: 1]
   --bitrate <Nk>             AAC bitrate. [default: 128k]
   --temp-dir <dir>           Run directory parent.
   --progress                 Mirror NDJSON events to stderr.
@@ -184,8 +181,9 @@ export async function main(argv = process.argv.slice(2)) {
     console.log('abk 0.1.0');
     return;
   }
-  const parsed = parseCommand(argv);
+  const wantsJson = argv.includes('--json');
   try {
+    const parsed = parseCommand(argv);
     if (parsed.command === 'inspect') {
       if (!parsed.file) throw new AbkError('INPUT_UNREADABLE', 'inspect requires a file path.');
       const report = await inspectFile(parsed.file);
@@ -202,7 +200,7 @@ export async function main(argv = process.argv.slice(2)) {
       error instanceof AbkError
         ? { code: error.code, message: error.message, hint: error.hint }
         : { code: 'BUILD_FAILED', message: error instanceof Error ? error.message : String(error) };
-    if (parsed.json) console.log(JSON.stringify(envelope(false, undefined, known)));
+    if (wantsJson) console.log(JSON.stringify(envelope(false, undefined, known)));
     else
       console.error(`${known.code}: ${known.message}${known.hint ? `\nHint: ${known.hint}` : ''}`);
     process.exitCode = 1;
@@ -219,7 +217,6 @@ export function createCli() {
     .option('-n, --dry-run', 'Plan without building')
     .option('--json', 'Write one JSON result')
     .option('--no-conversion', 'Remux compatible input')
-    .option('--jobs <n>', 'Maximum parallel conversions')
     .option('--bitrate <rate>', 'AAC bitrate')
     .option('--title <text>', 'Audiobook title')
     .option('--author <text>', 'Audiobook author')

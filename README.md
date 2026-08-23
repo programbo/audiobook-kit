@@ -40,7 +40,6 @@ abk inspect small-gods.m4b --json
   in `HH:MM:SS Chapter title` form.
 - Auto-detects `cover.*`, `folder.*`, or `artwork.*`; `--cover` overrides it.
 - `--no-conversion` requires every source to share codec, sample rate, and channels.
-- `--jobs` bounds parallel input conversion work.
 
 ### Human and agent modes
 
@@ -51,7 +50,7 @@ abk inspect small-gods.m4b --json
 ```
 
 Every non-dry build creates a run directory with `plan.json`, `progress.ndjson`,
-per-input `ffmpeg-*.log`, `assemble.log`, and `result.json`. Add `--progress` to
+`assemble.log`, and `result.json`. Add `--progress` to
 mirror compact JSONL progress events to stderr while retaining stdout purity.
 
 ## Development

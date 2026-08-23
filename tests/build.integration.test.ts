@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, test } from 'vite-plus/test';
+import { afterEach, describe, expect, test } from 'vitest';
 
 import { executeBuild, inspectFile, planBuild } from '../src/media.js';
 import type { BuildOptions } from '../src/types.js';
@@ -80,7 +80,6 @@ function options(input: string, output: string): BuildOptions {
     dryRun: false,
     json: true,
     noConversion: true,
-    jobs: 2,
     bitrate: '64k',
     chapters: 'from',
     progress: false,

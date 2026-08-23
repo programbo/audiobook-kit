@@ -7,7 +7,6 @@ export type BuildOptions = {
   dryRun: boolean;
   json: boolean;
   noConversion: boolean;
-  jobs: number;
   bitrate: string;
   title?: string;
   author?: string;
@@ -48,7 +47,6 @@ export type BuildPlan = {
   cover?: string;
   mode: 'transcode' | 'remux';
   bitrate: string;
-  jobs: number;
 };
 
 export type InspectionReport = {

@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { cpus, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { readdir, stat, mkdtemp, writeFile, readFile, mkdir } from 'node:fs/promises';
 
@@ -227,7 +227,8 @@ async function chaptersFromText(path: string, durationMs: number): Promise<Chapt
 
 export async function planBuild(options: BuildOptions): Promise<BuildPlan> {
   const paths = await discoverInputs(options.inputs);
-  const probes = await Promise.all(paths.map(probe));
+  const probes: AudioProbe[] = [];
+  for (const path of paths) probes.push(await probe(path));
   const codecs = new Set(probes.map((item) => `${item.codec}/${item.sampleRate}/${item.channels}`));
   if (options.noConversion && codecs.size !== 1)
     throw new AbkError(
@@ -260,7 +261,6 @@ export async function planBuild(options: BuildOptions): Promise<BuildPlan> {
     cover: options.cover ?? (await findCover(paths)),
     mode: options.noConversion ? 'remux' : 'transcode',
     bitrate: options.bitrate,
-    jobs: Math.max(1, options.jobs || Math.max(1, cpus().length - 1)),
   };
 }
 
