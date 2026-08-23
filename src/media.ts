@@ -2,7 +2,17 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { basename, dirname, extname, join, resolve } from 'node:path';
-import { readdir, stat, mkdtemp, writeFile, readFile, mkdir } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import {
+  readdir,
+  stat,
+  mkdtemp,
+  writeFile,
+  readFile,
+  mkdir,
+  rename,
+  unlink,
+} from 'node:fs/promises';
 
 const execFileAsync = promisify(execFile);
 
@@ -19,17 +29,7 @@ import {
 import { createRunLog } from './run-log.js';
 import { buildMachine } from './workflow.js';
 
-const AUDIO_EXTENSIONS = new Set([
-  '.aac',
-  '.flac',
-  '.m4a',
-  '.mp3',
-  '.ogg',
-  '.oga',
-  '.opus',
-  '.wav',
-  '.wma',
-]);
+const AUDIO_EXTENSIONS = new Set(['.m4a']);
 const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
 
 function naturalCompare(a: string, b: string) {
@@ -329,15 +329,34 @@ export async function executeBuild(
   else command.push('-c:a', 'aac', '-b:a', plan.bitrate);
   if (plan.cover)
     command.push('-map', '2:v:0', '-c:v', 'mjpeg', '-disposition:v:0', 'attached_pic');
-  command.push('-movflags', '+faststart', plan.output);
-  await run(command, join(runDir, 'assemble.log'));
-  workflow.send({ type: 'ASSEMBLED' });
-  await inspectFile(plan.output);
-  workflow.send({ type: 'VERIFIED' });
-  await log.event('BUILD_SUCCEEDED', { output: plan.output });
-  const result = { v: 1, ok: true, data: { output: plan.output, runDir } };
-  await log.writeJson('result.json', result);
-  return { output: plan.output, runDir };
+  const candidate = join(
+    dirname(plan.output),
+    `.${basename(plan.output, '.m4b')}.${randomUUID()}.partial.m4b`,
+  );
+  command.push('-movflags', '+faststart', candidate);
+  try {
+    await run(command, join(runDir, 'assemble.log'));
+    workflow.send({ type: 'ASSEMBLED' });
+    await inspectFile(candidate);
+    await rename(candidate, plan.output);
+    workflow.send({ type: 'VERIFIED' });
+    await log.event('BUILD_SUCCEEDED', { output: plan.output });
+    const result = { v: 1, ok: true, data: { output: plan.output, runDir } };
+    await log.writeJson('result.json', result);
+    workflow.stop();
+    return { output: plan.output, runDir };
+  } catch (error) {
+    await unlink(candidate).catch(() => undefined);
+    workflow.send({ type: 'FAIL' });
+    const known =
+      error instanceof AbkError
+        ? { code: error.code, message: error.message, hint: error.hint }
+        : { code: 'BUILD_FAILED', message: error instanceof Error ? error.message : String(error) };
+    await log.writeJson('result.json', { v: 1, ok: false, error: known });
+    await log.event('BUILD_FAILED', known);
+    workflow.stop();
+    throw error;
+  }
 }
 
 export async function inspectFile(path: string): Promise<InspectionReport> {
