@@ -143,7 +143,7 @@ describe('build integration', () => {
     const plan = await planBuild(input);
 
     expect(plan).toMatchObject({
-      title: basename(root),
+      title: basename(root).replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim(),
       narrator: 'Source Narrator',
       series: 'Source Series',
       seriesPart: '4',
