@@ -127,6 +127,9 @@ describe('build integration', () => {
       'Second chapter',
     ]);
     expect(report.cover.present).toBe(true);
+    const rebuiltPlan = await planBuild({ ...input, force: true });
+    expect(rebuiltPlan.inputs).toHaveLength(2);
+    expect(rebuiltPlan.chapters).toHaveLength(2);
     expect(report.tags).toMatchObject({
       title: 'Fixture Book',
       artist: 'Test Author',
@@ -144,6 +147,24 @@ describe('build integration', () => {
     });
   });
 
+  test('rejects unsupported codec copy mode before ffmpeg work starts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'abk-flac-'));
+    workspaces.push(root);
+    await ffmpeg([
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=440:duration=1',
+      '-c:a',
+      'flac',
+      join(root, '01.flac'),
+    ]);
+
+    await expect(planBuild(options(root, join(root, 'book.m4b')))).rejects.toMatchObject({
+      code: 'REMUX_INCOMPATIBLE',
+    });
+  });
+
   test('rejects malformed chapter timestamps before ffmpeg runs', async () => {
     const root = await fixture();
     const chapterFile = join(root, 'chapters.txt');
@@ -152,6 +173,21 @@ describe('build integration', () => {
     input.chapters = chapterFile;
 
     await expect(planBuild(input)).rejects.toMatchObject({ code: 'INVALID_CHAPTER_FILE' });
+  });
+
+  test('decodes escaped FFmetadata chapter titles', async () => {
+    const root = await fixture();
+    const chapterFile = join(root, 'chapters.ffmeta');
+    await writeFile(
+      chapterFile,
+      ';FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=1000\ntitle=Part\\=One\n',
+    );
+    const input = options(root, join(root, 'book.m4b'));
+    input.chapters = chapterFile;
+
+    await expect(planBuild(input)).resolves.toMatchObject({
+      chapters: [{ title: 'Part=One' }],
+    });
   });
 
   test('records a terminal JSONL and result artifact when assembly fails', async () => {
@@ -168,6 +204,29 @@ describe('build integration', () => {
     const events = (await readFile(join(runs, run!, 'progress.ndjson'), 'utf8')).trim().split('\n');
     expect(result).toMatchObject({ v: 1, ok: false, error: { code: 'BUILD_FAILED' } });
     expect(JSON.parse(events.at(-1)!)).toMatchObject({ event: 'BUILD_FAILED' });
+  });
+
+  test('waits for active peer jobs before recording terminal worker failure', async () => {
+    const root = await fixture();
+    const runs = join(root, 'runs');
+    const input = options(root, join(root, 'book.m4b'));
+    input.tempDir = runs;
+    input.jobs = 2;
+    const basePlan = await planBuild(input);
+    const plan = {
+      ...basePlan,
+      inputs: [{ ...basePlan.inputs[0]!, path: join(root, 'missing.m4a') }, basePlan.inputs[1]!],
+    };
+
+    await expect(executeBuild(plan, input)).rejects.toMatchObject({ code: 'BUILD_FAILED' });
+
+    const [run] = await readdir(runs);
+    const events = (await readFile(join(runs, run!, 'progress.ndjson'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line).event);
+    expect(events).toContain('JOB_SUCCEEDED');
+    expect(events.at(-1)).toBe('BUILD_FAILED');
   });
 
   test('preserves audiobook metadata from the first input when no override is supplied', async () => {

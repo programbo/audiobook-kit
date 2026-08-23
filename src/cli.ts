@@ -43,38 +43,66 @@ export function parseCommand(
   | ({ command: 'build' } & BuildOptions)
   | { command: 'inspect'; file: string; json: boolean; chaptersOnly: boolean } {
   const [command = 'build', ...tokens] = argv;
+  if (command !== 'build' && command !== 'inspect') {
+    throw new AbkError(
+      'INVALID_ARGUMENT',
+      `Unknown command: ${command}`,
+      'Run abk --help for available commands.',
+    );
+  }
   if (command === 'inspect') {
-    const [file] = tokens.filter((token) => !token.startsWith('-'));
-    return {
-      command: 'inspect',
-      file: file ?? '',
-      json: tokens.includes('--json'),
-      chaptersOnly: tokens.includes('--chapters-only'),
-    };
+    let file: string | undefined;
+    let json = false;
+    let chaptersOnly = false;
+    for (const token of tokens) {
+      if (token === '--json') json = true;
+      else if (token === '--chapters-only') chaptersOnly = true;
+      else if (token.startsWith('-')) {
+        throw new AbkError(
+          'INVALID_ARGUMENT',
+          `Unknown inspect option: ${token}`,
+          'Run abk inspect --help for supported options.',
+        );
+      } else if (file) {
+        throw new AbkError('INVALID_ARGUMENT', 'inspect accepts exactly one file path.');
+      } else file = token;
+    }
+    return { command: 'inspect', file: file ?? '', json, chaptersOnly };
   }
   const options: Record<string, unknown> = { inputs: [] };
+  const takeValue = (flag: string, index: number) => {
+    const value = tokens[index + 1];
+    if (!value || value.startsWith('-')) {
+      throw new AbkError(
+        'INVALID_ARGUMENT',
+        `${flag} requires a value.`,
+        'Run abk build --help for supported options.',
+      );
+    }
+    return value;
+  };
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index]!;
     if (!token.startsWith('-')) (options.inputs as string[]).push(token);
-    else if (token === '-o' || token === '--output') options.output = tokens[++index];
+    else if (token === '-o' || token === '--output') options.output = takeValue(token, index++);
     else if (token === '-f' || token === '--force') options.force = true;
     else if (token === '-n' || token === '--dry-run') options.dryRun = true;
     else if (token === '--json') options.json = true;
     else if (token === '--no-conversion') options.noConversion = true;
-    else if (token === '--jobs') options.jobs = tokens[++index];
-    else if (token === '--bitrate') options.bitrate = tokens[++index];
-    else if (token === '--title') options.title = tokens[++index];
-    else if (token === '--author') options.author = tokens[++index];
-    else if (token === '--narrator') options.narrator = tokens[++index];
-    else if (token === '--series') options.series = tokens[++index];
-    else if (token === '--series-part') options.seriesPart = tokens[++index];
-    else if (token === '--year') options.year = tokens[++index];
-    else if (token === '--genre') options.genre = tokens[++index];
-    else if (token === '--cover') options.cover = tokens[++index];
-    else if (token === '--chapters') options.chapters = tokens[++index];
-    else if (token === '--temp-dir') options.tempDir = tokens[++index];
+    else if (token === '--jobs') options.jobs = takeValue(token, index++);
+    else if (token === '--bitrate') options.bitrate = takeValue(token, index++);
+    else if (token === '--title') options.title = takeValue(token, index++);
+    else if (token === '--author') options.author = takeValue(token, index++);
+    else if (token === '--narrator') options.narrator = takeValue(token, index++);
+    else if (token === '--series') options.series = takeValue(token, index++);
+    else if (token === '--series-part') options.seriesPart = takeValue(token, index++);
+    else if (token === '--year') options.year = takeValue(token, index++);
+    else if (token === '--genre') options.genre = takeValue(token, index++);
+    else if (token === '--cover') options.cover = takeValue(token, index++);
+    else if (token === '--chapters') options.chapters = takeValue(token, index++);
+    else if (token === '--temp-dir') options.tempDir = takeValue(token, index++);
     else if (token === '--progress') options.progress = true;
-    else if (token.startsWith('-'))
+    else
       throw new AbkError(
         'INVALID_ARGUMENT',
         `Unknown option: ${token}`,

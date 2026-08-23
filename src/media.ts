@@ -215,6 +215,10 @@ function validateChapters(chapters: Chapter[], durationMs: number): Chapter[] {
   return chapters;
 }
 
+function unescapeMetadata(value: string): string {
+  return value.replace(/\\([=;#\\])/g, '$1');
+}
+
 async function chaptersFromText(path: string, durationMs: number): Promise<Chapter[]> {
   const text = await readFile(path, 'utf8');
   if (text.startsWith(';FFMETADATA1')) {
@@ -237,7 +241,7 @@ async function chaptersFromText(path: string, durationMs: number): Promise<Chapt
         index: index + 1,
         startMs: Math.round(Number(values.START) * scale),
         endMs: Math.round(Number(values.END) * scale),
-        title: values.title ?? `Chapter ${index + 1}`,
+        title: values.title ? unescapeMetadata(values.title) : `Chapter ${index + 1}`,
       });
     }
     return validateChapters(chapters, durationMs);
@@ -271,23 +275,28 @@ async function chaptersFromText(path: string, durationMs: number): Promise<Chapt
 }
 
 export async function planBuild(options: BuildOptions): Promise<BuildPlan> {
-  const paths = await discoverInputs(options.inputs);
-  const probes = await Promise.all(paths.map(probe));
-  const codecs = new Set(probes.map((item) => `${item.codec}/${item.sampleRate}/${item.channels}`));
-  if (options.noConversion && codecs.size !== 1)
-    throw new AbkError(
-      'REMUX_INCOMPATIBLE',
-      'Cannot remux sources with differing codec, sample-rate, or channel layouts.',
-      'Remove --no-conversion to normalize the inputs.',
-    );
-  const first = probes[0]!;
-  const inferredDir = dirname(first.path);
+  const discovered = await discoverInputs(options.inputs);
+  const inferredDir = dirname(discovered[0]!);
   const output = resolve(
     options.output ?? join(inferredDir, `${titleFromDirectory(inferredDir)}.m4b`),
   );
   if (extname(output).toLowerCase() !== '.m4b') {
     throw new AbkError('INVALID_ARGUMENT', `Output must use the .m4b extension: ${output}`);
   }
+  const paths = discovered.filter((path) => resolve(path) !== output);
+  if (!paths.length) {
+    throw new AbkError('NO_INPUT_FILES', 'The output file cannot also be an audiobook input.');
+  }
+  const probes = await Promise.all(paths.map(probe));
+  const codecs = new Set(probes.map((item) => `${item.codec}/${item.sampleRate}/${item.channels}`));
+  const copyCodecs = new Set(['aac', 'alac']);
+  if (options.noConversion && (codecs.size !== 1 || !copyCodecs.has(probes[0]!.codec)))
+    throw new AbkError(
+      'REMUX_INCOMPATIBLE',
+      'Remuxing requires matching AAC or ALAC sources with one sample-rate and channel layout.',
+      'Remove --no-conversion to normalize the inputs.',
+    );
+  const first = probes[0]!;
   const chapters =
     options.chapters === 'none'
       ? []
@@ -352,14 +361,19 @@ async function mapConcurrent<T>(
   fn: (item: T, index: number) => Promise<void>,
 ) {
   let next = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, async () => {
-      while (next < items.length) {
-        const index = next++;
+  let failure: unknown;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (!failure && next < items.length) {
+      const index = next++;
+      try {
         await fn(items[index]!, index);
+      } catch (error) {
+        failure ??= error;
       }
-    }),
-  );
+    }
+  });
+  await Promise.all(workers);
+  if (failure) throw failure;
 }
 
 export async function executeBuild(
@@ -456,57 +470,65 @@ export async function executeBuild(
 }
 
 export async function inspectFile(path: string): Promise<InspectionReport> {
-  const raw = await outputOf([
-    'ffprobe',
-    '-v',
-    'error',
-    '-show_entries',
-    'format=duration,bit_rate:format_tags:stream=codec_name,codec_type,channels,sample_rate,bit_rate,width,height:stream_disposition=attached_pic:chapter=start_time,end_time:chapter_tags',
-    '-of',
-    'json',
-    path,
-  ]);
-  const data = JSON.parse(raw) as {
-    format?: { duration?: string; bit_rate?: string; tags?: Record<string, string> };
-    streams?: Array<{
-      codec_name?: string;
-      codec_type?: string;
-      channels?: number;
-      sample_rate?: string;
-      bit_rate?: string;
-      width?: number;
-      height?: number;
-      disposition?: { attached_pic?: number };
-    }>;
-    chapters?: Array<{ start_time?: string; end_time?: string; tags?: Record<string, string> }>;
-  };
-  const audio = data.streams?.find((stream) => stream.codec_type === 'audio');
-  if (!audio?.codec_name || !data.format?.duration)
-    throw new AbkError('INSPECT_FAILED', `No audio stream in ${path}.`);
-  const image = data.streams?.find((stream) => stream.disposition?.attached_pic === 1);
-  const info = await stat(path);
-  return {
-    file: resolve(path),
-    sizeBytes: info.size,
-    tags: data.format.tags ?? {},
-    chapters: (data.chapters ?? []).map((chapter, index) => ({
-      index: index + 1,
-      startMs: Math.round(Number(chapter.start_time ?? 0) * 1000),
-      endMs: Math.round(Number(chapter.end_time ?? 0) * 1000),
-      title: chapter.tags?.title ?? `Chapter ${index + 1}`,
-    })),
-    cover: {
-      present: Boolean(image),
-      format: image?.codec_name,
-      width: image?.width,
-      height: image?.height,
-    },
-    audio: {
-      codec: audio.codec_name,
-      channels: audio.channels ?? 0,
-      sampleRate: Number(audio.sample_rate ?? 0),
-      bitrate: Number(audio.bit_rate ?? data.format.bit_rate ?? 0) || undefined,
-      durationMs: Math.round(Number(data.format.duration) * 1000),
-    },
-  };
+  try {
+    const raw = await outputOf([
+      'ffprobe',
+      '-v',
+      'error',
+      '-show_entries',
+      'format=duration,bit_rate:format_tags:stream=codec_name,codec_type,channels,sample_rate,bit_rate,width,height:stream_disposition=attached_pic:chapter=start_time,end_time:chapter_tags',
+      '-of',
+      'json',
+      path,
+    ]);
+    const data = JSON.parse(raw) as {
+      format?: { duration?: string; bit_rate?: string; tags?: Record<string, string> };
+      streams?: Array<{
+        codec_name?: string;
+        codec_type?: string;
+        channels?: number;
+        sample_rate?: string;
+        bit_rate?: string;
+        width?: number;
+        height?: number;
+        disposition?: { attached_pic?: number };
+      }>;
+      chapters?: Array<{ start_time?: string; end_time?: string; tags?: Record<string, string> }>;
+    };
+    const audio = data.streams?.find((stream) => stream.codec_type === 'audio');
+    if (!audio?.codec_name || !data.format?.duration)
+      throw new AbkError('INSPECT_FAILED', `No audio stream in ${path}.`);
+    const image = data.streams?.find((stream) => stream.disposition?.attached_pic === 1);
+    const info = await stat(path);
+    return {
+      file: resolve(path),
+      sizeBytes: info.size,
+      tags: data.format.tags ?? {},
+      chapters: (data.chapters ?? []).map((chapter, index) => ({
+        index: index + 1,
+        startMs: Math.round(Number(chapter.start_time ?? 0) * 1000),
+        endMs: Math.round(Number(chapter.end_time ?? 0) * 1000),
+        title: chapter.tags?.title ?? `Chapter ${index + 1}`,
+      })),
+      cover: {
+        present: Boolean(image),
+        format: image?.codec_name,
+        width: image?.width,
+        height: image?.height,
+      },
+      audio: {
+        codec: audio.codec_name,
+        channels: audio.channels ?? 0,
+        sampleRate: Number(audio.sample_rate ?? 0),
+        bitrate: Number(audio.bit_rate ?? data.format.bit_rate ?? 0) || undefined,
+        durationMs: Math.round(Number(data.format.duration) * 1000),
+      },
+    };
+  } catch (error) {
+    if (error instanceof AbkError) throw error;
+    throw new AbkError(
+      'INSPECT_FAILED',
+      `Could not inspect ${path}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }

@@ -48,6 +48,15 @@ describe('CLI contract', () => {
     });
   });
 
+  test('rejects missing option operands and unknown command grammar', () => {
+    expect(() => parseCommand(['build', '--cover', '--dry-run'])).toThrow('requires a value');
+    expect(() => parseCommand(['buidl', '--dry-run'])).toThrow('Unknown command');
+    expect(() => parseCommand(['inspect', 'book.m4b', '--not-real'])).toThrow(
+      'Unknown inspect option',
+    );
+    expect(() => parseCommand(['inspect', 'one.m4b', 'two.m4b'])).toThrow('exactly one');
+  });
+
   test('rejects non-numeric series parts before ffmpeg runs', () => {
     expect(() => parseCommand(['build', '--series-part', 'nope'])).toThrow('Series part');
   });
@@ -62,6 +71,17 @@ describe('CLI contract', () => {
       v: 1,
       ok: false,
       error: { code: 'INVALID_ARGUMENT' },
+    });
+  });
+
+  test('classifies missing inspect files as inspection errors', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await main(['inspect', '/definitely/missing.m4b', '--json']);
+
+    expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toMatchObject({
+      ok: false,
+      error: { code: 'INSPECT_FAILED' },
     });
   });
 
