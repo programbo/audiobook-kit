@@ -44,6 +44,11 @@ export type BuildPlan = {
   output: string;
   title: string;
   author?: string;
+  narrator?: string;
+  series?: string;
+  seriesPart?: string;
+  year?: string;
+  genre?: string;
   chapters: Chapter[];
   cover?: string;
   mode: 'transcode' | 'remux';
@@ -75,7 +80,8 @@ export type AbkErrorCode =
   | 'REMUX_INCOMPATIBLE'
   | 'BUILD_FAILED'
   | 'INSPECT_FAILED'
-  | 'INVALID_CHAPTER_FILE';
+  | 'INVALID_CHAPTER_FILE'
+  | 'INVALID_ARGUMENT';
 
 export class AbkError extends Error {
   constructor(

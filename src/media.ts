@@ -252,6 +252,11 @@ export async function planBuild(options: BuildOptions): Promise<BuildPlan> {
     output,
     title: options.title ?? first.tags.title ?? titleFromDirectory(inferredDir),
     author: options.author ?? first.tags.artist,
+    narrator: options.narrator ?? first.tags.composer,
+    series: options.series ?? first.tags.album,
+    seriesPart: options.seriesPart ?? first.tags.track,
+    year: options.year ?? first.tags.date,
+    genre: options.genre ?? first.tags.genre,
     chapters,
     cover: options.cover ?? (await findCover(paths)),
     mode: options.noConversion ? 'remux' : 'transcode',
@@ -271,6 +276,11 @@ function escapeMetadata(value: string) {
 async function writeMetadata(plan: BuildPlan, path: string): Promise<void> {
   const lines = [';FFMETADATA1', `title=${escapeMetadata(plan.title)}`];
   if (plan.author) lines.push(`artist=${escapeMetadata(plan.author)}`);
+  if (plan.narrator) lines.push(`composer=${escapeMetadata(plan.narrator)}`);
+  if (plan.series) lines.push(`album=${escapeMetadata(plan.series)}`);
+  if (plan.seriesPart) lines.push(`track=${escapeMetadata(plan.seriesPart)}`);
+  if (plan.year) lines.push(`date=${escapeMetadata(plan.year)}`);
+  if (plan.genre) lines.push(`genre=${escapeMetadata(plan.genre)}`);
   for (const chapter of plan.chapters) {
     lines.push(
       '',

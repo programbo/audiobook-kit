@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, test } from 'vite-plus/test';
+import { afterEach, describe, expect, test } from 'vitest';
 
 import { executeBuild, inspectFile, planBuild } from '../src/media.js';
 import type { BuildOptions } from '../src/types.js';
@@ -39,6 +39,16 @@ async function fixture() {
     'title=First chapter',
     '-metadata',
     'artist=Test Author',
+    '-metadata',
+    'composer=Source Narrator',
+    '-metadata',
+    'album=Source Series',
+    '-metadata',
+    'track=4',
+    '-metadata',
+    'date=2024',
+    '-metadata',
+    'genre=Mystery',
     join(root, '01 - First chapter.m4a'),
   ]);
   await ffmpeg([
@@ -91,7 +101,14 @@ describe('build integration', () => {
   test('remuxes generated AAC chapters into an inspectable M4B with chapters and cover', async () => {
     const root = await fixture();
     const output = join(root, 'book.m4b');
-    const plan = await planBuild(options(root, output));
+    const input = options(root, output);
+    input.title = 'Fixture Book';
+    input.narrator = 'Fixture Narrator';
+    input.series = 'Fixture Series';
+    input.seriesPart = '2';
+    input.year = '2026';
+    input.genre = 'Education';
+    const plan = await planBuild(input);
 
     expect(plan.inputs).toHaveLength(2);
     expect(plan.chapters.map((chapter) => chapter.title)).toEqual([
@@ -110,5 +127,37 @@ describe('build integration', () => {
       'Second chapter',
     ]);
     expect(report.cover.present).toBe(true);
+    expect(report.tags).toMatchObject({
+      title: 'Fixture Book',
+      artist: 'Test Author',
+      album: 'Fixture Series',
+      date: '2026',
+      genre: 'Education',
+    });
+  });
+
+  test('preserves audiobook metadata from the first input when no override is supplied', async () => {
+    const root = await fixture();
+    const output = join(root, 'inherited.m4b');
+    const input = options(root, output);
+    const plan = await planBuild(input);
+
+    expect(plan).toMatchObject({
+      narrator: 'Source Narrator',
+      series: 'Source Series',
+      seriesPart: '4',
+      year: '2024',
+      genre: 'Mystery',
+    });
+
+    const result = await executeBuild(plan, input);
+    const report = await inspectFile(result.output);
+    expect(report.tags).toMatchObject({
+      composer: 'Source Narrator',
+      album: 'Source Series',
+      track: '4',
+      date: '2024',
+      genre: 'Mystery',
+    });
   });
 });

@@ -22,7 +22,10 @@ const buildSchema = z.object({
   author: z.string().optional(),
   narrator: z.string().optional(),
   series: z.string().optional(),
-  seriesPart: z.string().optional(),
+  seriesPart: z
+    .string()
+    .regex(/^[1-9]\d*$/, 'Series part must be a positive whole number.')
+    .optional(),
   year: z
     .string()
     .regex(/^\d{4}$/)
@@ -62,6 +65,11 @@ export function parseCommand(
     else if (token === '--bitrate') options.bitrate = tokens[++index];
     else if (token === '--title') options.title = tokens[++index];
     else if (token === '--author') options.author = tokens[++index];
+    else if (token === '--narrator') options.narrator = tokens[++index];
+    else if (token === '--series') options.series = tokens[++index];
+    else if (token === '--series-part') options.seriesPart = tokens[++index];
+    else if (token === '--year') options.year = tokens[++index];
+    else if (token === '--genre') options.genre = tokens[++index];
     else if (token === '--cover') options.cover = tokens[++index];
     else if (token === '--chapters') options.chapters = tokens[++index];
     else if (token === '--temp-dir') options.tempDir = tokens[++index];
@@ -174,8 +182,9 @@ async function build(options: BuildOptions) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
-  const parsed = parseCommand(argv);
+  const wantsJson = argv.includes('--json');
   try {
+    const parsed = parseCommand(argv);
     if (parsed.command === 'inspect') {
       if (!parsed.file) throw new AbkError('INPUT_UNREADABLE', 'inspect requires a file path.');
       const report = await inspectFile(parsed.file);
@@ -191,8 +200,16 @@ export async function main(argv = process.argv.slice(2)) {
     const known =
       error instanceof AbkError
         ? { code: error.code, message: error.message, hint: error.hint }
-        : { code: 'BUILD_FAILED', message: error instanceof Error ? error.message : String(error) };
-    if (parsed.json) console.log(JSON.stringify(envelope(false, undefined, known)));
+        : error instanceof z.ZodError
+          ? {
+              code: 'INVALID_ARGUMENT',
+              message: error.issues[0]?.message ?? 'Invalid command arguments.',
+            }
+          : {
+              code: 'BUILD_FAILED',
+              message: error instanceof Error ? error.message : String(error),
+            };
+    if (wantsJson) console.log(JSON.stringify(envelope(false, undefined, known)));
     else
       console.error(`${known.code}: ${known.message}${known.hint ? `\nHint: ${known.hint}` : ''}`);
     process.exitCode = 1;
@@ -213,6 +230,11 @@ export function createCli() {
     .option('--bitrate <rate>', 'AAC bitrate')
     .option('--title <text>', 'Audiobook title')
     .option('--author <text>', 'Audiobook author')
+    .option('--narrator <text>', 'Audiobook narrator')
+    .option('--series <text>', 'Series name')
+    .option('--series-part <n>', 'Series position')
+    .option('--year <yyyy>', 'Publication year')
+    .option('--genre <text>', 'Genre')
     .option('--cover <file>', 'Cover image')
     .option('--chapters <mode-or-file>', 'Chapter source')
     .option('--temp-dir <dir>', 'Run directory parent')
