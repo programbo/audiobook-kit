@@ -74,6 +74,12 @@ export function parseCommand(
     else if (token === '--chapters') options.chapters = tokens[++index];
     else if (token === '--temp-dir') options.tempDir = tokens[++index];
     else if (token === '--progress') options.progress = true;
+    else if (token.startsWith('-'))
+      throw new AbkError(
+        'INVALID_ARGUMENT',
+        `Unknown option: ${token}`,
+        'Run abk build --help for supported options.',
+      );
   }
   const parsed = buildSchema.parse(
     options.inputs && (options.inputs as string[]).length ? options : { ...options, inputs: ['.'] },
@@ -93,7 +99,9 @@ OUTPUT
   --no-conversion            Remux only; sources must share audio properties.
 
 METADATA
-  --title <text>  --author <text>  --cover <file>
+  --title <text>  --author <text>  --narrator <text>
+  --series <text> --series-part <n> --year <yyyy> --genre <text>
+  --cover <file>
 
 CHAPTERS
   --chapters <from|none|file>  Filename chapters by default; accepts ffmetadata
@@ -181,7 +189,32 @@ async function build(options: BuildOptions) {
   return { ...result, report };
 }
 
+function mainHelp() {
+  return `abk — build and inspect .m4b audiobooks
+
+USAGE
+  abk build [inputs...] [options]
+  abk inspect <file> [options]
+
+COMMANDS
+  build      Build one audiobook from files or folders.
+  inspect    Read tags, chapters, cover, and audio-stream information.
+
+Run abk build --help or abk inspect --help for command details.`;
+}
+
 export async function main(argv = process.argv.slice(2)) {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    const command = argv[0];
+    console.log(
+      command === 'build' ? buildHelp() : command === 'inspect' ? inspectHelp() : mainHelp(),
+    );
+    return;
+  }
+  if (argv.includes('--version') || argv.includes('-V')) {
+    console.log('abk 0.1.0');
+    return;
+  }
   const wantsJson = argv.includes('--json');
   try {
     const parsed = parseCommand(argv);

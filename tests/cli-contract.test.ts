@@ -65,6 +65,27 @@ describe('CLI contract', () => {
     });
   });
 
+  test('prints command help before attempting a build', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await main(['build', '--help']);
+
+    expect(process.exitCode).toBeUndefined();
+    expect(String(log.mock.calls[0]?.[0])).toContain('abk build');
+    expect(String(log.mock.calls[0]?.[0])).toContain('--narrator');
+  });
+
+  test('returns a JSON envelope for unknown options', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await main(['build', '--json', '--not-real']);
+
+    expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_ARGUMENT' },
+    });
+  });
+
   test('build help explains the non-interactive contract', () => {
     expect(buildHelp()).toContain('--json');
     expect(buildHelp()).toContain('--dry-run');
