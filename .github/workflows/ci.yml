@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  quality-gate:
+    name: Quality gate (Blacksmith)
+    runs-on: blacksmith-4vcpu-uubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # Blacksmith's cached installs — drop-in for setup-node/cache
+      - name: Install dependencies
+        uses: useblacksmith/setup-bun@v1
+        with:
+          bun-version-file: package.json
+          cache: true
+
+      - name: Type check
+        run: bun x tsc --noEmit
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Test
+        run: bun test --coverage
+
+      # Snapshot tests pin the aspirational help output byte-for-byte
+      - name: Help snapshots
+        run: bun test test/help.snap.test.ts
