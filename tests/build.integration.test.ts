@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import { afterEach, describe, expect, test } from 'vitest';
 
@@ -143,6 +143,7 @@ describe('build integration', () => {
     const plan = await planBuild(input);
 
     expect(plan).toMatchObject({
+      title: basename(root),
       narrator: 'Source Narrator',
       series: 'Source Series',
       seriesPart: '4',

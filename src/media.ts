@@ -250,7 +250,9 @@ export async function planBuild(options: BuildOptions): Promise<BuildPlan> {
   return {
     inputs: probes,
     output,
-    title: options.title ?? first.tags.title ?? titleFromDirectory(inferredDir),
+    title:
+      options.title ??
+      (titleFromDirectory(inferredDir) || first.tags.title || 'Untitled audiobook'),
     author: options.author ?? first.tags.artist,
     narrator: options.narrator ?? first.tags.composer,
     series: options.series ?? first.tags.album,
