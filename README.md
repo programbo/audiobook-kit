@@ -1,40 +1,85 @@
 # audiobook-kit (`abk`)
 
-Build audiobooks (`.m4b`) from ordinary audio files. A Bun + ffmpeg CLI designed for humans and agents.
+Build one audiobook (`.m4b`) from ordinary audio files. `abk` is a Bun CLI
+that uses system `ffmpeg` and `ffprobe`; it has one workflow for people and
+agents.
 
-> 🚧 Pre-release — under active development. Tracking happens on the [project board](https://github.com/orgs/programbo/projects/1).
+> Pre-release. Track work on the [GitHub Project](https://github.com/orgs/programbo/projects/1).
 
-```text
-abk build "~/Audiobooks/Small Gods (1992)/"        # folder → Small Gods.m4b
-abk inspect "Small Gods.m4b"                       # verify tags, chapters, cover
+## Install and requirements
+
+```bash
+bun install
+bun run build
 ```
 
-## Design principles
+`ffmpeg` and `ffprobe` must be available on `PATH`.
 
-- **Infer maximum, pre-fill best values.** `abk build .` scans, natural-sorts,
-  infers title/author from names, auto-detects cover art, picks a sane bitrate.
-- **Omitted stays omitted.** Metadata is never fabricated beyond title/author inference.
-- **Errors prevented by constraints, not warnings** — invalid plans fail fast, before any work starts.
-- **Two audiences, one binary**: rich TTY output for humans; stable versioned JSON
-  (`{ v: 1, ok: true, data }`), NDJSON progress on stderr, and run-dir logs for agents.
+## Use
+
+```bash
+# Discover, sort, probe, transcode, add chapters/tags/cover, and write an M4B.
+abk build "~/Audiobooks/Small Gods (1992)/"
+
+# Plan without creating audio output — preferred first step for agents.
+abk build "~/Audiobooks/Small Gods (1992)/" --dry-run --json
+
+# Avoid re-encoding compatible AAC inputs.
+abk build chapters/ -o small-gods.m4b --no-conversion
+
+# Verify the completed file.
+abk inspect small-gods.m4b
+abk inspect small-gods.m4b --json
+```
+
+### `build`
+
+- Recursively discovers supported audio inputs, removes duplicates, and natural-sorts them.
+- Uses source filenames as chapter titles by default.
+- Accepts `--chapters none`, an FFmpeg `;FFMETADATA1` file, or plain text lines
+  in `HH:MM:SS Chapter title` form.
+- Auto-detects `cover.*`, `folder.*`, or `artwork.*`; `--cover` overrides it.
+- `--no-conversion` requires every source to share codec, sample rate, and channels.
+
+### Human and agent modes
+
+`--json` writes exactly one versioned result envelope to stdout:
+
+```json
+{ "v": 1, "ok": true, "data": { "output": "/path/book.m4b" } }
+```
+
+Every non-dry build creates a run directory with `plan.json`, `progress.ndjson`,
+`assemble.log`, and `result.json`. Add `--progress` to
+mirror compact JSONL progress events to stderr while retaining stdout purity.
+
+## Development
+
+Vite+ provides Oxfmt, Oxlint, type checking, tests, and the package build. Bun
+is the package manager/runtime.
+
+```bash
+bun run format
+bun run lint
+bun run check     # quality gate: format + lint + type check
+bun run test
+bun run build
+```
+
+Tests generate their own tiny AAC/cover fixtures with ffmpeg. The real
+85-minute _Satan's Guide to the Bible_ source is an acceptance fixture only; it
+is never part of automated tests.
 
 ## Architecture
 
-| Piece | Choice |
-|---|---|
-| Runtime | Bun ≥ 1.4 |
-| Transcoding | system `ffmpeg` / `ffprobe` (only media dependency) |
-| Arg parsing | CAC + zod validation + custom grouped help renderer |
-| MP4 tags & chapters | taglib-wasm |
-| Cover art | built-in `Bun.Image` |
-
-Chapter input formats: ffmetadata (`.ffmeta`), plain text (`00:31:15 Chapter title`),
-with CSV/JSONL planned via a shared canonical IR.
-
-## Status
-
-See the [Roadmap view](https://github.com/orgs/programbo/projects/1) — six phases,
-from CLI skeleton through agent ergonomics.
+| Piece                     | Choice                            |
+| ------------------------- | --------------------------------- |
+| Runtime / package manager | Bun >= 1.4                        |
+| Quality/build toolchain   | Vite+ 0.2.1, Oxfmt, Oxlint        |
+| CLI grammar / validation  | CAC plus zod                      |
+| Workflow lifecycle        | XState v5                         |
+| Media processing          | system `ffmpeg` / `ffprobe`       |
+| Agent diagnostics         | JSON envelope plus JSONL run logs |
 
 ## License
 
