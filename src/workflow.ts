@@ -7,21 +7,9 @@ import { createMachine } from 'xstate';
  */
 export const buildMachine = createMachine({
   id: 'build',
-  initial: 'preflight',
+  initial: 'ready',
   states: {
-    preflight: { on: { READY: 'discovering', FAIL: 'failed', CANCEL: 'cancelled' } },
-    discovering: { on: { DISCOVERED: 'probing', FAIL: 'failed', CANCEL: 'cancelled' } },
-    probing: { on: { PROBED: 'planning', FAIL: 'failed', CANCEL: 'cancelled' } },
-    planning: {
-      on: {
-        PLANNED: 'creatingRun',
-        DRY_RUN_COMPLETE: 'succeeded',
-        FAIL: 'failed',
-        CANCEL: 'cancelled',
-      },
-    },
-    creatingRun: { on: { RUN_READY: 'processing', FAIL: 'failed', CANCEL: 'cancelled' } },
-    processing: { on: { PROCESSED: 'assembling', FAIL: 'failed', CANCEL: 'cancelled' } },
+    ready: { on: { START: 'assembling', CANCEL: 'cancelled' } },
     assembling: { on: { ASSEMBLED: 'verifying', FAIL: 'failed', CANCEL: 'cancelled' } },
     verifying: { on: { VERIFIED: 'succeeded', FAIL: 'failed', CANCEL: 'cancelled' } },
     succeeded: { type: 'final' },

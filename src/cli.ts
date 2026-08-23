@@ -39,38 +39,39 @@ export function parseCommand(
 ):
   | ({ command: 'build' } & BuildOptions)
   | { command: 'inspect'; file: string; json: boolean; chaptersOnly: boolean } {
-  const [command = 'build', ...tokens] = argv;
-  if (command === 'inspect') {
-    const [file] = tokens.filter((token) => !token.startsWith('-'));
+  const cli = createCli();
+  const parsed = cli.parse(['node', 'abk', ...argv], { run: false });
+  const options = parsed.options;
+  if (cli.matchedCommandName === 'inspect') {
+    const [file, ...extra] = parsed.args;
+    if (!file || extra.length)
+      throw new AbkError('INVALID_ARGUMENT', 'inspect requires exactly one file path.');
     return {
       command: 'inspect',
-      file: file ?? '',
-      json: tokens.includes('--json'),
-      chaptersOnly: tokens.includes('--chapters-only'),
+      file,
+      json: Boolean(options.json),
+      chaptersOnly: Boolean(options.chaptersOnly),
     };
   }
-  const options: Record<string, unknown> = { inputs: [] };
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index]!;
-    if (!token.startsWith('-')) (options.inputs as string[]).push(token);
-    else if (token === '-o' || token === '--output') options.output = tokens[++index];
-    else if (token === '-f' || token === '--force') options.force = true;
-    else if (token === '-n' || token === '--dry-run') options.dryRun = true;
-    else if (token === '--json') options.json = true;
-    else if (token === '--no-conversion') options.noConversion = true;
-    else if (token === '--jobs') options.jobs = tokens[++index];
-    else if (token === '--bitrate') options.bitrate = tokens[++index];
-    else if (token === '--title') options.title = tokens[++index];
-    else if (token === '--author') options.author = tokens[++index];
-    else if (token === '--cover') options.cover = tokens[++index];
-    else if (token === '--chapters') options.chapters = tokens[++index];
-    else if (token === '--temp-dir') options.tempDir = tokens[++index];
-    else if (token === '--progress') options.progress = true;
-  }
-  const parsed = buildSchema.parse(
-    options.inputs && (options.inputs as string[]).length ? options : { ...options, inputs: ['.'] },
-  );
-  return { command: 'build', ...parsed };
+  if (cli.matchedCommandName !== 'build')
+    throw new AbkError('INVALID_ARGUMENT', 'Run abk --help for available commands.');
+  const input = buildSchema.parse({
+    inputs: parsed.args.length ? parsed.args : ['.'],
+    output: options.output,
+    force: options.force,
+    dryRun: options.dryRun,
+    json: options.json,
+    noConversion: options.conversion === false,
+    jobs: options.jobs,
+    bitrate: options.bitrate,
+    title: options.title,
+    author: options.author,
+    cover: options.cover,
+    chapters: options.chapters,
+    tempDir: options.tempDir,
+    progress: options.progress,
+  });
+  return { command: 'build', ...input };
 }
 
 export function buildHelp() {
@@ -174,6 +175,15 @@ async function build(options: BuildOptions) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    const command = argv[0];
+    console.log(command === 'inspect' ? inspectHelp() : buildHelp());
+    return;
+  }
+  if (argv.includes('--version') || argv.includes('-V')) {
+    console.log('abk 0.1.0');
+    return;
+  }
   const parsed = parseCommand(argv);
   try {
     if (parsed.command === 'inspect') {

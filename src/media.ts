@@ -6,6 +6,8 @@ import { readdir, stat, mkdtemp, writeFile, readFile, mkdir } from 'node:fs/prom
 
 const execFileAsync = promisify(execFile);
 
+import { createActor } from 'xstate';
+
 import {
   AbkError,
   type AudioProbe,
@@ -15,12 +17,12 @@ import {
   type InspectionReport,
 } from './types.js';
 import { createRunLog } from './run-log.js';
+import { buildMachine } from './workflow.js';
 
 const AUDIO_EXTENSIONS = new Set([
   '.aac',
   '.flac',
   '.m4a',
-  '.m4b',
   '.mp3',
   '.ogg',
   '.oga',
@@ -234,7 +236,9 @@ export async function planBuild(options: BuildOptions): Promise<BuildPlan> {
       'Remove --no-conversion to normalize the inputs.',
     );
   const first = probes[0]!;
-  const inferredDir = dirname(first.path);
+  const requested = options.inputs[0] ?? first.path;
+  const requestedInfo = await stat(requested).catch(() => undefined);
+  const inferredDir = requestedInfo?.isDirectory() ? resolve(requested) : dirname(first.path);
   const output = resolve(
     options.output ?? join(inferredDir, `${titleFromDirectory(inferredDir)}.m4b`),
   );
@@ -250,7 +254,7 @@ export async function planBuild(options: BuildOptions): Promise<BuildPlan> {
   return {
     inputs: probes,
     output,
-    title: options.title ?? first.tags.title ?? titleFromDirectory(inferredDir),
+    title: options.title ?? titleFromDirectory(inferredDir) ?? first.tags.title,
     author: options.author ?? first.tags.artist,
     chapters,
     cover: options.cover ?? (await findCover(paths)),
@@ -284,62 +288,26 @@ async function writeMetadata(plan: BuildPlan, path: string): Promise<void> {
   await writeFile(path, `${lines.join('\n')}\n`);
 }
 
-async function mapConcurrent<T>(
-  items: readonly T[],
-  limit: number,
-  fn: (item: T, index: number) => Promise<void>,
-) {
-  let next = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, async () => {
-      while (next < items.length) {
-        const index = next++;
-        await fn(items[index]!, index);
-      }
-    }),
-  );
-}
-
 export async function executeBuild(
   plan: BuildPlan,
   options: BuildOptions,
 ): Promise<{ output: string; runDir: string }> {
+  const workflow = createActor(buildMachine);
+  workflow.start();
+  workflow.send({ type: 'START' });
   const base = options.tempDir ?? join(tmpdir(), 'abk');
   await mkdir(base, { recursive: true });
   const runDir = await mkdtemp(join(base, 'run-'));
   const log = await createRunLog(runDir, options.progress);
   await log.writeJson('plan.json', plan);
   await log.event('PLAN_RESOLVED', { inputs: plan.inputs.length, mode: plan.mode });
-  const stage = join(runDir, 'stage');
-  await mkdir(stage, { recursive: true });
-  const staged = plan.inputs.map((_, index) =>
-    join(stage, `${String(index + 1).padStart(4, '0')}.m4a`),
-  );
-  await mapConcurrent(plan.inputs, plan.jobs, async (input, index) => {
-    await log.event('JOB_STARTED', { index: index + 1, input: input.path });
-    const command =
-      plan.mode === 'remux'
-        ? ['ffmpeg', '-y', '-v', 'error', '-i', input.path, '-vn', '-c:a', 'copy', staged[index]!]
-        : [
-            'ffmpeg',
-            '-y',
-            '-v',
-            'error',
-            '-i',
-            input.path,
-            '-vn',
-            '-c:a',
-            'aac',
-            '-b:a',
-            plan.bitrate,
-            staged[index]!,
-          ];
-    await run(command, join(runDir, `ffmpeg-${String(index + 1).padStart(4, '0')}.log`));
-    await log.event('JOB_SUCCEEDED', { index: index + 1, output: staged[index]! });
-  });
+
   const concat = join(runDir, 'inputs.txt');
   const metadata = join(runDir, 'chapters.ffmeta');
-  await writeFile(concat, staged.map((path) => `file '${escapeConcat(path)}'`).join('\n'));
+  await writeFile(
+    concat,
+    plan.inputs.map((input) => `file '${escapeConcat(input.path)}'`).join('\n'),
+  );
   await writeMetadata(plan, metadata);
   const command = [
     'ffmpeg',
@@ -356,11 +324,16 @@ export async function executeBuild(
     metadata,
   ];
   if (plan.cover) command.push('-i', plan.cover);
-  command.push('-map', '0:a', '-map_metadata', '1', '-c:a', 'copy');
+  command.push('-map', '0:a', '-map_metadata', '1');
+  if (plan.mode === 'remux') command.push('-c:a', 'copy');
+  else command.push('-c:a', 'aac', '-b:a', plan.bitrate);
   if (plan.cover)
     command.push('-map', '2:v:0', '-c:v', 'mjpeg', '-disposition:v:0', 'attached_pic');
   command.push('-movflags', '+faststart', plan.output);
   await run(command, join(runDir, 'assemble.log'));
+  workflow.send({ type: 'ASSEMBLED' });
+  await inspectFile(plan.output);
+  workflow.send({ type: 'VERIFIED' });
   await log.event('BUILD_SUCCEEDED', { output: plan.output });
   const result = { v: 1, ok: true, data: { output: plan.output, runDir } };
   await log.writeJson('result.json', result);

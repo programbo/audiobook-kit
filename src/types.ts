@@ -75,7 +75,8 @@ export type AbkErrorCode =
   | 'REMUX_INCOMPATIBLE'
   | 'BUILD_FAILED'
   | 'INSPECT_FAILED'
-  | 'INVALID_CHAPTER_FILE';
+  | 'INVALID_CHAPTER_FILE'
+  | 'INVALID_ARGUMENT';
 
 export class AbkError extends Error {
   constructor(
