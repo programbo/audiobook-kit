@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -134,6 +134,40 @@ describe('build integration', () => {
       date: '2026',
       genre: 'Education',
     });
+  });
+
+  test('rejects non-M4B output paths before media work starts', async () => {
+    const root = await fixture();
+
+    await expect(planBuild(options(root, join(root, 'book.mp4')))).rejects.toMatchObject({
+      code: 'INVALID_ARGUMENT',
+    });
+  });
+
+  test('rejects malformed chapter timestamps before ffmpeg runs', async () => {
+    const root = await fixture();
+    const chapterFile = join(root, 'chapters.txt');
+    await writeFile(chapterFile, '00:99:00 Impossible timestamp\n');
+    const input = options(root, join(root, 'book.m4b'));
+    input.chapters = chapterFile;
+
+    await expect(planBuild(input)).rejects.toMatchObject({ code: 'INVALID_CHAPTER_FILE' });
+  });
+
+  test('records a terminal JSONL and result artifact when assembly fails', async () => {
+    const root = await fixture();
+    const runs = join(root, 'runs');
+    const input = options(root, join(root, 'missing', 'book.m4b'));
+    input.tempDir = runs;
+    const plan = await planBuild(input);
+
+    await expect(executeBuild(plan, input)).rejects.toMatchObject({ code: 'BUILD_FAILED' });
+
+    const [run] = await readdir(runs);
+    const result = JSON.parse(await readFile(join(runs, run!, 'result.json'), 'utf8'));
+    const events = (await readFile(join(runs, run!, 'progress.ndjson'), 'utf8')).trim().split('\n');
+    expect(result).toMatchObject({ v: 1, ok: false, error: { code: 'BUILD_FAILED' } });
+    expect(JSON.parse(events.at(-1)!)).toMatchObject({ event: 'BUILD_FAILED' });
   });
 
   test('preserves audiobook metadata from the first input when no override is supplied', async () => {

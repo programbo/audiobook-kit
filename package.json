@@ -9,9 +9,6 @@
     "dist"
   ],
   "type": "module",
-  "exports": {
-    ".": "./dist/index.js"
-  },
   "scripts": {
     "build": "vp build",
     "dev": "bun --watch src/dev.ts",

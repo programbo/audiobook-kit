@@ -6,6 +6,8 @@ import { readdir, stat, mkdtemp, writeFile, readFile, mkdir } from 'node:fs/prom
 
 const execFileAsync = promisify(execFile);
 
+import { createActor } from 'xstate';
+
 import {
   AbkError,
   type AudioProbe,
@@ -15,6 +17,7 @@ import {
   type InspectionReport,
 } from './types.js';
 import { createRunLog } from './run-log.js';
+import { buildMachine } from './workflow.js';
 
 const AUDIO_EXTENSIONS = new Set([
   '.aac',
@@ -178,6 +181,40 @@ function chaptersFromProbes(probes: readonly AudioProbe[]): Chapter[] {
   });
 }
 
+function validateChapters(chapters: Chapter[], durationMs: number): Chapter[] {
+  if (!chapters.length) {
+    throw new AbkError('INVALID_CHAPTER_FILE', 'Chapter file contains no chapters.');
+  }
+  let previousStart = -1;
+  let previousEnd = 0;
+  for (const chapter of chapters) {
+    if (!Number.isFinite(chapter.startMs) || !Number.isFinite(chapter.endMs)) {
+      throw new AbkError(
+        'INVALID_CHAPTER_FILE',
+        `Chapter ${chapter.index} has invalid timestamps.`,
+      );
+    }
+    if (chapter.startMs < 0 || chapter.endMs <= chapter.startMs) {
+      throw new AbkError(
+        'INVALID_CHAPTER_FILE',
+        `Chapter ${chapter.index} must have a positive duration.`,
+      );
+    }
+    if (chapter.startMs <= previousStart || chapter.startMs < previousEnd) {
+      throw new AbkError('INVALID_CHAPTER_FILE', 'Chapters must be ordered and non-overlapping.');
+    }
+    if (chapter.endMs > durationMs) {
+      throw new AbkError(
+        'INVALID_CHAPTER_FILE',
+        `Chapter ${chapter.index} ends after the audiobook duration.`,
+      );
+    }
+    previousStart = chapter.startMs;
+    previousEnd = chapter.endMs;
+  }
+  return chapters;
+}
+
 async function chaptersFromText(path: string, durationMs: number): Promise<Chapter[]> {
   const text = await readFile(path, 'utf8');
   if (text.startsWith(';FFMETADATA1')) {
@@ -190,8 +227,12 @@ async function chaptersFromText(path: string, durationMs: number): Promise<Chapt
           .filter((line) => line.includes('='))
           .map((line) => line.split(/=(.*)/s) as [string, string]),
       );
-      const [numerator, denominator] = (values.TIMEBASE ?? '1/1000000000').split('/').map(Number);
-      const scale = (1000 * numerator) / denominator;
+      const timebase = values.TIMEBASE ?? '1/1000000000';
+      const timebaseMatch = /^(\d+)\/(\d+)$/.exec(timebase);
+      if (!timebaseMatch || Number(timebaseMatch[1]) <= 0 || Number(timebaseMatch[2]) <= 0) {
+        throw new AbkError('INVALID_CHAPTER_FILE', `Invalid chapter timebase: ${timebase}`);
+      }
+      const scale = (1000 * Number(timebaseMatch[1])) / Number(timebaseMatch[2]);
       chapters.push({
         index: index + 1,
         startMs: Math.round(Number(values.START) * scale),
@@ -199,7 +240,7 @@ async function chaptersFromText(path: string, durationMs: number): Promise<Chapt
         title: values.title ?? `Chapter ${index + 1}`,
       });
     }
-    return chapters;
+    return validateChapters(chapters, durationMs);
   }
   const entries = text
     .split(/\r?\n/)
@@ -208,6 +249,9 @@ async function chaptersFromText(path: string, durationMs: number): Promise<Chapt
       const match = /^(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?\s+(.+)$/.exec(line.trim());
       if (!match) throw new AbkError('INVALID_CHAPTER_FILE', `Invalid chapter line: ${line}`);
       const [, hours, minutes, seconds, milliseconds = '0', title] = match;
+      if (Number(minutes) >= 60 || Number(seconds) >= 60 || !title.trim()) {
+        throw new AbkError('INVALID_CHAPTER_FILE', `Invalid chapter timestamp: ${line}`);
+      }
       return {
         startMs:
           (Number(hours) * 3600 + Number(minutes) * 60 + Number(seconds)) * 1000 +
@@ -215,12 +259,15 @@ async function chaptersFromText(path: string, durationMs: number): Promise<Chapt
         title,
       };
     });
-  return entries.map((entry, index) => ({
-    index: index + 1,
-    startMs: entry.startMs,
-    endMs: entries[index + 1]?.startMs ?? durationMs,
-    title: entry.title,
-  }));
+  return validateChapters(
+    entries.map((entry, index) => ({
+      index: index + 1,
+      startMs: entry.startMs,
+      endMs: entries[index + 1]?.startMs ?? durationMs,
+      title: entry.title,
+    })),
+    durationMs,
+  );
 }
 
 export async function planBuild(options: BuildOptions): Promise<BuildPlan> {
@@ -238,6 +285,9 @@ export async function planBuild(options: BuildOptions): Promise<BuildPlan> {
   const output = resolve(
     options.output ?? join(inferredDir, `${titleFromDirectory(inferredDir)}.m4b`),
   );
+  if (extname(output).toLowerCase() !== '.m4b') {
+    throw new AbkError('INVALID_ARGUMENT', `Output must use the .m4b extension: ${output}`);
+  }
   const chapters =
     options.chapters === 'none'
       ? []
@@ -316,67 +366,93 @@ export async function executeBuild(
   plan: BuildPlan,
   options: BuildOptions,
 ): Promise<{ output: string; runDir: string }> {
+  const workflow = createActor(buildMachine);
+  workflow.start();
+  // Planning has completed before this executor receives an immutable BuildPlan.
+  workflow.send({ type: 'READY' });
+  workflow.send({ type: 'DISCOVERED' });
+  workflow.send({ type: 'PROBED' });
+  workflow.send({ type: 'PLANNED' });
+
   const base = options.tempDir ?? join(tmpdir(), 'abk');
   await mkdir(base, { recursive: true });
   const runDir = await mkdtemp(join(base, 'run-'));
   const log = await createRunLog(runDir, options.progress);
   await log.writeJson('plan.json', plan);
   await log.event('PLAN_RESOLVED', { inputs: plan.inputs.length, mode: plan.mode });
-  const stage = join(runDir, 'stage');
-  await mkdir(stage, { recursive: true });
-  const staged = plan.inputs.map((_, index) =>
-    join(stage, `${String(index + 1).padStart(4, '0')}.m4a`),
-  );
-  await mapConcurrent(plan.inputs, plan.jobs, async (input, index) => {
-    await log.event('JOB_STARTED', { index: index + 1, input: input.path });
-    const command =
-      plan.mode === 'remux'
-        ? ['ffmpeg', '-y', '-v', 'error', '-i', input.path, '-vn', '-c:a', 'copy', staged[index]!]
-        : [
-            'ffmpeg',
-            '-y',
-            '-v',
-            'error',
-            '-i',
-            input.path,
-            '-vn',
-            '-c:a',
-            'aac',
-            '-b:a',
-            plan.bitrate,
-            staged[index]!,
-          ];
-    await run(command, join(runDir, `ffmpeg-${String(index + 1).padStart(4, '0')}.log`));
-    await log.event('JOB_SUCCEEDED', { index: index + 1, output: staged[index]! });
-  });
-  const concat = join(runDir, 'inputs.txt');
-  const metadata = join(runDir, 'chapters.ffmeta');
-  await writeFile(concat, staged.map((path) => `file '${escapeConcat(path)}'`).join('\n'));
-  await writeMetadata(plan, metadata);
-  const command = [
-    'ffmpeg',
-    '-y',
-    '-v',
-    'error',
-    '-f',
-    'concat',
-    '-safe',
-    '0',
-    '-i',
-    concat,
-    '-i',
-    metadata,
-  ];
-  if (plan.cover) command.push('-i', plan.cover);
-  command.push('-map', '0:a', '-map_metadata', '1', '-c:a', 'copy');
-  if (plan.cover)
-    command.push('-map', '2:v:0', '-c:v', 'mjpeg', '-disposition:v:0', 'attached_pic');
-  command.push('-movflags', '+faststart', plan.output);
-  await run(command, join(runDir, 'assemble.log'));
-  await log.event('BUILD_SUCCEEDED', { output: plan.output });
-  const result = { v: 1, ok: true, data: { output: plan.output, runDir } };
-  await log.writeJson('result.json', result);
-  return { output: plan.output, runDir };
+  workflow.send({ type: 'RUN_READY' });
+  try {
+    const stage = join(runDir, 'stage');
+    await mkdir(stage, { recursive: true });
+    const staged = plan.inputs.map((_, index) =>
+      join(stage, `${String(index + 1).padStart(4, '0')}.m4a`),
+    );
+    await mapConcurrent(plan.inputs, plan.jobs, async (input, index) => {
+      await log.event('JOB_STARTED', { index: index + 1, input: input.path });
+      const command =
+        plan.mode === 'remux'
+          ? ['ffmpeg', '-y', '-v', 'error', '-i', input.path, '-vn', '-c:a', 'copy', staged[index]!]
+          : [
+              'ffmpeg',
+              '-y',
+              '-v',
+              'error',
+              '-i',
+              input.path,
+              '-vn',
+              '-c:a',
+              'aac',
+              '-b:a',
+              plan.bitrate,
+              staged[index]!,
+            ];
+      await run(command, join(runDir, `ffmpeg-${String(index + 1).padStart(4, '0')}.log`));
+      await log.event('JOB_SUCCEEDED', { index: index + 1, output: staged[index]! });
+    });
+    workflow.send({ type: 'PROCESSED' });
+    const concat = join(runDir, 'inputs.txt');
+    const metadata = join(runDir, 'chapters.ffmeta');
+    await writeFile(concat, staged.map((path) => `file '${escapeConcat(path)}'`).join('\n'));
+    await writeMetadata(plan, metadata);
+    const command = [
+      'ffmpeg',
+      '-y',
+      '-v',
+      'error',
+      '-f',
+      'concat',
+      '-safe',
+      '0',
+      '-i',
+      concat,
+      '-i',
+      metadata,
+    ];
+    if (plan.cover) command.push('-i', plan.cover);
+    command.push('-map', '0:a', '-map_metadata', '1', '-c:a', 'copy');
+    if (plan.cover)
+      command.push('-map', '2:v:0', '-c:v', 'mjpeg', '-disposition:v:0', 'attached_pic');
+    command.push('-movflags', '+faststart', plan.output);
+    await run(command, join(runDir, 'assemble.log'));
+    workflow.send({ type: 'ASSEMBLED' });
+    await inspectFile(plan.output);
+    workflow.send({ type: 'VERIFIED' });
+    await log.event('BUILD_SUCCEEDED', { output: plan.output });
+    const result = { v: 1, ok: true, data: { output: plan.output, runDir } };
+    await log.writeJson('result.json', result);
+    workflow.stop();
+    return { output: plan.output, runDir };
+  } catch (error) {
+    workflow.send({ type: 'FAIL' });
+    const known =
+      error instanceof AbkError
+        ? { code: error.code, message: error.message, hint: error.hint }
+        : { code: 'BUILD_FAILED', message: error instanceof Error ? error.message : String(error) };
+    await log.event('BUILD_FAILED', known);
+    await log.writeJson('result.json', { v: 1, ok: false, error: known });
+    workflow.stop();
+    throw error;
+  }
 }
 
 export async function inspectFile(path: string): Promise<InspectionReport> {
